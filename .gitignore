@@ -1,0 +1,11 @@
+.idea/
+*.iml
+.gradle/
+.kotlin/
+build/
+proxy/data/
+.DS_Store
+
+# Generated PKI material - run pki/generate.sh to create
+pki/sca/*
+pki/ssc/*
