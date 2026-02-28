@@ -116,7 +116,6 @@ private class AddRouteHandler(
     if (buffer.readableBytes() < length) return
 
     val response = TlsConnectInfo.Serde.decode(buffer)
-    buffer.skipBytes(length)
 
     println("Received TlsConnectInfo response: $response")
 

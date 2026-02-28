@@ -120,7 +120,6 @@ data class TlsConnectInfo(
     const val BASE_SIZE: Int = 64
 
     private const val MAX_SIZE: Int = 512
-    private const val HOSTNAME_OFFSET: Int = 32
     private const val HOSTNAME_LENGTH: Int = 32
 
     /** Encode [info] into the provided [buffer]. */
@@ -173,42 +172,34 @@ data class TlsConnectInfo(
     /**
      * Decode a [TlsConnectInfo] from the provided [buffer].
      *
-     * Uses absolute `get*` methods so the ByteBuf's reader index is not advanced, allowing the
-     * buffer to pass through unchanged for forwarding.
+     * Advances the buffer's reader index by [length] bytes.
      *
      * @throws IllegalArgumentException if there are insufficient bytes or the length field is out
      *   of range.
      */
     fun decode(buffer: ByteBuf): TlsConnectInfo {
-      val ri = buffer.readerIndex()
       val readable = buffer.readableBytes()
 
       require(readable >= BASE_SIZE) { "not enough readable bytes: $readable < $BASE_SIZE" }
 
-      val length = buffer.getUnsignedShortLE(ri)
+      val length = buffer.readUnsignedShortLE()
       require(length in BASE_SIZE..MAX_SIZE) {
         "length out of range: $length (expected $BASE_SIZE..$MAX_SIZE)"
       }
       require(readable >= length) {
         "not enough readable bytes for declared length: $readable < $length"
       }
+      val flags = Flag.fromUint16(buffer.readUnsignedShortLE())
+      val version = buffer.readUnsignedByte().toUByte()
+      val error = TlsError.fromByte(buffer.readUnsignedByte().toInt())
 
-      val flags = Flag.fromUint16(buffer.getUnsignedShortLE(ri + 2))
-      val version = buffer.getUnsignedByte(ri + 4).toUByte()
-      val error = TlsError.fromByte(buffer.getUnsignedByte(ri + 5).toInt())
+      val amsNetId = AmsNetId(ByteArray(AmsNetId.NET_ID_LENGTH).apply { buffer.readBytes(this) })
+      val userLength = buffer.readUnsignedByte().toInt()
+      val passwordLength = buffer.readUnsignedByte().toInt()
+      val reserved = ByteArray(18).apply { buffer.readBytes(this) }
 
-      val amsNetId = AmsNetId(ByteArray(AmsNetId.NET_ID_LENGTH) { buffer.getByte(ri + 6 + it) })
-      val userLength = buffer.getUnsignedByte(ri + 12).toInt()
-      val passwordLength = buffer.getUnsignedByte(ri + 13).toInt()
-      val reserved = ByteArray(18) { buffer.getByte(ri + 14 + it) }
-
-      // HostName: 32-byte null-padded field starting at offset 32
-      val hostNameBytes = ByteArray(HOSTNAME_LENGTH) { buffer.getByte(ri + HOSTNAME_OFFSET + it) }
-      val hostNameEnd =
-          hostNameBytes
-              .indexOfFirst { it == 0.toByte() }
-              .let { if (it < 0) HOSTNAME_LENGTH else it }
-      val hostName = String(hostNameBytes, 0, hostNameEnd, CHARSET)
+      val hostNameBytes = ByteArray(HOSTNAME_LENGTH).apply { buffer.readBytes(this) }
+      val hostName = String(hostNameBytes, CHARSET).trimEnd('\u0000')
 
       // Variable-length credential fields (all-or-nothing)
       require((userLength > 0) == (passwordLength > 0)) {
@@ -217,10 +208,8 @@ data class TlsConnectInfo(
 
       val credentials =
           if (userLength > 0) {
-            var varOffset = ri + BASE_SIZE
-            val userBytes = ByteArray(userLength) { buffer.getByte(varOffset + it) }
-            varOffset += userLength
-            val passwordBytes = ByteArray(passwordLength) { buffer.getByte(varOffset + it) }
+            val userBytes = ByteArray(userLength).apply { buffer.readBytes(this) }
+            val passwordBytes = ByteArray(passwordLength).apply { buffer.readBytes(this) }
             Pair(String(userBytes, CHARSET), String(passwordBytes, CHARSET))
           } else {
             null

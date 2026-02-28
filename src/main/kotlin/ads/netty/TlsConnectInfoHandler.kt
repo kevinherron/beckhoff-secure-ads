@@ -52,7 +52,6 @@ class TlsConnectInfoHandler(
     if (buffer.readableBytes() < length) return
 
     val response = TlsConnectInfo.Serde.decode(buffer)
-    buffer.skipBytes(length)
 
     logger.info("rx <- $response")
 
