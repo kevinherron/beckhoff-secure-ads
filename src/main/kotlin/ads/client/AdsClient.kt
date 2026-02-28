@@ -5,6 +5,7 @@ import ads.commands.AdsReadDeviceInfoResponse
 import ads.commands.AdsReadStateResponse
 import ads.netty.AmsFrameCodec
 import ads.netty.TlsConnectInfoHandler
+import ads.netty.psk.BouncyCastlePskHandler
 import io.netty.bootstrap.Bootstrap
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
@@ -47,43 +48,7 @@ class AdsClient(val config: AdsClientConfig) {
   suspend fun connect(): Result<Unit> = runCatching {
     disconnecting = false
 
-    val secureAdsConfig = config.secureAdsConfig
-
-    val (channelInitializer, tlsConnectInfoDeferred) =
-        if (secureAdsConfig != null) {
-          val sslContext = buildSslContext(secureAdsConfig)
-          val deferred = CompletableDeferred<TlsConnectInfo>()
-          val tlsConnectInfoHandler =
-              TlsConnectInfoHandler(
-                  buildTlsConnectInfoRequest(secureAdsConfig, config.sourceNetId),
-                  deferred,
-              )
-
-          val initializer =
-              object : ChannelInitializer<SocketChannel>() {
-                override fun initChannel(ch: SocketChannel) {
-                  val sslEngine =
-                      sslContext.newEngine(ch.alloc(), config.hostname, config.port.toInt())
-                  sslEngine.enabledProtocols = PROTOCOLS
-                  ch.pipeline().addLast("ssl", SslHandler(sslEngine))
-                  ch.pipeline().addLast("tls-connect-info", tlsConnectInfoHandler)
-                  ch.pipeline().addLast("ams-frame-codec", AmsFrameCodec(includeTcpHeader = false))
-                  ch.pipeline().addLast("inbound-frame-handler", InboundFrameHandler())
-                }
-              }
-
-          Pair(initializer, deferred)
-        } else {
-          val initializer =
-              object : ChannelInitializer<SocketChannel>() {
-                override fun initChannel(ch: SocketChannel) {
-                  ch.pipeline().addLast("ams-frame-codec", AmsFrameCodec(includeTcpHeader = true))
-                  ch.pipeline().addLast("inbound-frame-handler", InboundFrameHandler())
-                }
-              }
-
-          Pair(initializer, null)
-        }
+    val (channelInitializer, tlsConnectInfoDeferred) = createChannelInitializer()
 
     val channelDeferred = CompletableDeferred<Channel>()
 
@@ -133,6 +98,67 @@ class AdsClient(val config: AdsClientConfig) {
     channel?.close()?.await()
     channel = null
     failAllPendingRequests(Exception("client disconnected"))
+  }
+
+  private fun createChannelInitializer():
+      Pair<ChannelInitializer<SocketChannel>, CompletableDeferred<TlsConnectInfo>?> {
+
+    val secureAdsConfig: SecureAdsConfig? = config.secureAdsConfig
+
+    var tlsConnectInfoHandler: TlsConnectInfoHandler? = null
+    var deferred: CompletableDeferred<TlsConnectInfo>? = null
+
+    if (secureAdsConfig != null) {
+      deferred = CompletableDeferred()
+
+      tlsConnectInfoHandler =
+          TlsConnectInfoHandler(
+              buildTlsConnectInfoRequest(secureAdsConfig, config.sourceNetId),
+              deferred,
+          )
+    }
+
+    val initializer =
+        object : ChannelInitializer<SocketChannel>() {
+          override fun initChannel(ch: SocketChannel) {
+            when (secureAdsConfig) {
+              is CertificateConfig -> {
+                val sslContext = buildSslContext(secureAdsConfig)
+                val sslEngine =
+                    sslContext.newEngine(ch.alloc(), config.hostname, config.port.toInt())
+                sslEngine.enabledProtocols = PROTOCOLS
+                ch.pipeline().addLast("ssl", SslHandler(sslEngine))
+              }
+
+              is PskConfig -> {
+                ch.pipeline()
+                    .addLast(
+                        "psk-tls",
+                        BouncyCastlePskHandler(
+                            identity = secureAdsConfig.identity.toByteArray(Charsets.UTF_8),
+                            psk = secureAdsConfig.pskBytes(),
+                            handshakeTimeoutMillis = config.connectTimeout.inWholeMilliseconds,
+                        ),
+                    )
+              }
+
+              null -> {}
+            }
+
+            if (tlsConnectInfoHandler != null) {
+              ch.pipeline().addLast("tls-connect-info", tlsConnectInfoHandler)
+            }
+
+            ch.pipeline()
+                .addLast(
+                    "ams-frame-codec",
+                    AmsFrameCodec(includeTcpHeader = secureAdsConfig == null),
+                )
+            ch.pipeline().addLast("inbound-frame-handler", InboundFrameHandler())
+          }
+        }
+
+    return Pair(initializer, deferred)
   }
 
   suspend fun readState(): Result<AdsReadStateResponse> = runCatching {

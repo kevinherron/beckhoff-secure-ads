@@ -64,16 +64,20 @@ inside the TLS tunnel.
 ## TlsConnectInfo
 
 `TlsConnectInfo` is the only application-layer handshake in Secure ADS. It is a
-single request/response exchange that serves **dual purpose** depending on the
-flags:
+single request/response exchange sent on every connection. Its role depends on
+the authentication mode:
 
-- **Route addition** (first connection to a new peer): the `AddRemote` flag
-  is set. Credentials may be included (SSC mode) or omitted (SCA mode, where the
-  CA-signed certificate is sufficient authentication). On success, the PLC
-  persists the route.
-- **Established-route communication** (subsequent connections): no `AddRemote`
-  flag. Authentication is via mTLS alone (SCA mode) or mTLS + certificate
-  fingerprint pinning (SSC mode). Credentials are never sent.
+- **SSC mode** requires an explicit route addition step on first connection: the
+  `AddRemote` flag is set and credentials (username/password) are included. On
+  success, the PLC persists the route. Subsequent connections omit `AddRemote`
+  and credentials — authentication relies on mTLS + certificate fingerprint
+  pinning from the initial registration.
+- **SCA mode** does not require explicit route addition. The CA-signed
+  certificate is sufficient authentication. Every connection sends a minimal
+  `TlsConnectInfo` with no `AddRemote` flag and no credentials.
+- **PSK mode** does not require explicit route addition. The PSK identity entry
+  in `StaticRoutes.xml` acts as the route. Every connection sends a minimal
+  `TlsConnectInfo` with no flags and no credentials.
 
 ### Wire Format
 
@@ -172,48 +176,7 @@ Beckhoff Secure ADS supports three authentication modes:
 
 - **SSC** – Self-Signed Certificate
 - **SCA** – Shared CA (both peers trust certificates issued by a shared CA)
-- **PSK** – Pre-Shared Key (operates entirely at the TLS layer; not covered here)
-
-### SCA Mode (Shared CA)
-
-Both the client and PLC hold certificates signed by the same CA. The CA
-certificate is configured on both sides. During the TLS handshake, each side
-validates the other's certificate chain against the shared CA.
-
-**Route addition:** The client sends a `TlsConnectInfo` with the `AddRemote`
-flag set and no credentials. The CA-signed certificate is the sole
-authentication mechanism. No username or password is exchanged.
-The `IpAddr` and `IgnoreCn` flags are environment-dependent (see note above);
-the examples here use `AddRemote | IpAddr | IgnoreCn` (0xE0).
-
-```
-Engineering PC                                PLC:8016
-       |                                             |
-       |---- TCP connect --------------------------->|
-       |                                             |
-       |<=== TLS 1.2 Handshake (mTLS) ==============>|
-       |  Client cert -->  (signed by shared CA)     |
-       |  <-- Server cert  (signed by shared CA)     |
-       |  Both validate against shared CA            |
-       |                                             |
-       |  TlsConnectInfo Request (64 bytes)          |
-       |  flags=AddRemote [|IpAddr] [|IgnoreCn]      |
-       |  netId=client AmsNetId                      |
-       |  hostname=client machine name               |
-       |  user_len=0, pwd_len=0  (no credentials)    |
-       |-------------------------------------------->|
-       |                                             |
-       |  TlsConnectInfo Response (64 bytes)         |
-       |  flags=Response(0x01), error=NoError(0)     |
-       |  netId=server AmsNetId                      |
-       |<--------------------------------------------|
-       |                                             |
-       |<==== AMS frames (no AMS/TCP header) =======>|
-```
-
-**Established route:** The client sends flags `None` (0x00), no credentials,
-exactly 64 bytes. The certificate chain validated during the TLS handshake is
-sufficient.
+- **PSK** – Pre-Shared Key (TLS-PSK with identity and derived key)
 
 ### SSC Mode (Self-Signed Certificate)
 
@@ -258,6 +221,125 @@ Engineering PC                                PLC:8016
 credentials, exactly 64 bytes. Authentication relies on mTLS + fingerprint
 match from route registration.
 
+### SCA Mode (Shared CA)
+
+Both the client and PLC hold certificates signed by the same CA. The CA
+certificate is configured on both sides. During the TLS handshake, each side
+validates the other's certificate chain against the shared CA.
+
+**No explicit route addition is required.** The CA-signed certificate is
+sufficient authentication. Every connection sends a minimal `TlsConnectInfo`
+(64 bytes, no `AddRemote` flag, no credentials).
+
+```
+Engineering PC                                PLC:8016
+       |                                             |
+       |---- TCP connect --------------------------->|
+       |                                             |
+       |<=== TLS 1.2 Handshake (mTLS) ==============>|
+       |  Client cert -->  (signed by shared CA)     |
+       |  <-- Server cert  (signed by shared CA)     |
+       |  Both validate against shared CA            |
+       |                                             |
+       |  TlsConnectInfo Request (64 bytes)          |
+       |  flags=None (0x00)                          |
+       |  netId=client AmsNetId                      |
+       |  hostname=client machine name               |
+       |  user_len=0, pwd_len=0  (no credentials)    |
+       |-------------------------------------------->|
+       |                                             |
+       |  TlsConnectInfo Response (64 bytes)         |
+       |  flags=Response(0x01), error=NoError(0)     |
+       |  netId=server AmsNetId                      |
+       |<--------------------------------------------|
+       |                                             |
+       |<==== AMS frames (no AMS/TCP header) =======>|
+```
+
+### PSK Mode (Pre-Shared Key)
+
+PSK mode uses TLS-PSK (RFC 4279) instead of certificates. Both the client and
+PLC share a pre-configured identity and password. No certificates, keystores, or
+CA infrastructure are required.
+
+**Key derivation:** TwinCAT derives the 32-byte PSK from the identity and
+password using `SHA-256(UPPER(identity) + password)`. The identity is
+uppercased before concatenation (TwinCAT defaults to
+`IdentityCaseSensitive="false"`).
+
+**TLS details:** PSK mode uses TLS 1.2 with pure PSK cipher suites (AES-CBC
+only). No TLS extensions are sent in the ClientHello. The connection uses
+Bouncy Castle TLS (`bctls`) rather than the JDK's `SSLEngine`, since the JDK
+provider does not support TLS-PSK.
+
+**Route behavior:** The PSK identity entry in TwinCAT's `StaticRoutes.xml`
+under `<Server><Tls><Psk>` acts as the route. A successful PSK TLS handshake
+implicitly authorizes AMS communication — no separate route addition step or
+credentials are needed.
+
+```
+Engineering PC                                PLC:8016
+       |                                             |
+       |---- TCP connect --------------------------->|
+       |                                             |
+       |<=== TLS 1.2 Handshake (TLS-PSK) ===========>|
+       |  (pure PSK, no certificates)                |
+       |                                             |
+       |  TlsConnectInfo Request (64 bytes)          |
+       |  flags=[] (empty)                           |
+       |  netId=client AmsNetId                      |
+       |  hostname=client machine name               |
+       |  user_len=0, pwd_len=0  (no credentials)    |
+       |-------------------------------------------->|
+       |                                             |
+       |  TlsConnectInfo Response (64 bytes)         |
+       |  flags=Response(0x01), error=NoError(0)     |
+       |  netId=server AmsNetId                      |
+       |<--------------------------------------------|
+       |                                             |
+       |<==== AMS frames (no AMS/TCP header) =======>|
+```
+
+**TwinCAT configuration:** Add a PSK entry to `StaticRoutes.xml` on the PLC
+under `<RemoteConnections>`:
+
+```xml
+
+<Server>
+  <Tls>
+    <Psk>
+      <Identity>my-client</Identity>
+      <Pwd>my-secret-password</Pwd>
+    </Psk>
+  </Tls>
+</Server>
+```
+
+After saving, reinitialize the TwinCAT router (RUN → CONFIG → RUN) so the new
+entry is loaded.
+
+**Supported cipher suites:**
+
+| Suite                             | Status      |
+|-----------------------------------|-------------|
+| `TLS_PSK_WITH_AES_256_CBC_SHA384` | ✓ Supported |
+| `TLS_PSK_WITH_AES_128_CBC_SHA256` | ✓ Supported |
+| `TLS_PSK_WITH_AES_256_CBC_SHA`    | ✓ Supported |
+| `TLS_PSK_WITH_AES_128_CBC_SHA`    | ✓ Supported |
+
+All GCM, CCM, ChaCha20, Camellia, and ARIA suites are rejected. Only pure PSK
+suites are supported (no DHE_PSK, no ECDHE_PSK).
+
+**Troubleshooting:**
+
+- **Handshake failure:** Verify the identity and password match `StaticRoutes.xml`
+  exactly. Remember that the identity is uppercased for key derivation.
+- **ADS timeout after handshake:** `TlsConnectInfo` is required even in PSK mode.
+  If the handshake succeeds but ADS commands time out, the `TlsConnectInfo`
+  exchange may have failed.
+- **Connection rate limiting:** TwinCAT may reject rapid sequential PSK
+  connections. Add a delay between reconnection attempts.
+
 ---
 
 ## Repository Map
@@ -265,7 +347,7 @@ match from route registration.
 The code is a Kotlin/Gradle project using Netty for async networking.
 
 ```
-build.gradle.kts                        # Kotlin 2.3.0, Netty 4.2, 4 run tasks
+build.gradle.kts                        # Kotlin 2.3.0, Netty 4.2
 pki/
   generate.sh                           # Generate all PKI material (SCA + SSC)
   sca/                                  # Shared CA mode PKI material
@@ -278,9 +360,9 @@ src/main/kotlin/
   Config.kt                             # Target host/port, AMS IDs, PKI paths
   AddRoute.kt                           # Shared AddRoute connection logic
   AddRouteSelfSigned.kt                 # Route registration (SSC mode)
-  AddRouteSharedCa.kt                   # Route registration (SCA mode)
   SecureAdsSelfSigned.kt                # ADS client example (SSC mode)
   SecureAdsSharedCa.kt                  # ADS client example (SCA mode)
+  SecureAdsPsk.kt                       # ADS client example (PSK mode)
   ads/
     TlsConnectInfo.kt                   # TlsConnectInfo structure + serde
     AmsHeader.kt                        # 32-byte AMS header + serde
@@ -296,13 +378,17 @@ src/main/kotlin/
       AdsClient.kt                      # Async ADS client (connect, readState, readDeviceInfo)
       AdsClientConfig.kt                # Client configuration
       SecureAds.kt                      # TLS context + TlsConnectInfo request builders
-      SecureAdsConfig.kt                # SelfSignedConfig / SharedCaConfig
+      SecureAdsConfig.kt                # SelfSignedConfig / SharedCaConfig / PskConfig
     commands/
       AdsReadDeviceInfo.kt              # ReadDeviceInfo request/response
       AdsReadState.kt                   # ReadState request/response
     netty/
-      AmsFrameCodec.kt                 # Frame codec (with/without AMS/TCP header)
-      TlsConnectInfoHandler.kt         # TlsConnectInfo exchange handler
+      AmsFrameCodec.kt                  # Frame codec (with/without AMS/TCP header)
+      TlsConnectInfoHandler.kt          # TlsConnectInfo exchange handler
+      psk/
+        BouncyCastlePskHandler.kt       # TLS-PSK transport handler (Bouncy Castle)
+        PskException.kt                 # Typed PSK error classification
+        PskHandshakeCompletionEvent.kt  # Transport-agnostic handshake event
 ```
 
 ### ADS Client Library
@@ -320,21 +406,14 @@ removes itself from the pipeline – leaving the connection ready for AMS frames
 
 ### Examples
 
-There are four runnable examples, organized into two pairs:
+There are four runnable examples:
 
-**Route registration** (run once to establish a route on the PLC):
-
-- `AddRouteSelfSigned` -- uses a self-signed cert from the `pki/ssc/` directory,
-  sends `TlsConnectInfo` with `AddRemote` flag and credentials
-- `AddRouteSharedCa` -- uses a CA-signed cert from the `pki/sca/` directory,
-  sends `TlsConnectInfo` with `AddRemote` flag, no credentials
-
-**ADS communication** (requires an established route):
-
-- `SecureAdsSelfSigned` -- connects with the self-signed cert, performs
-  `ReadDeviceInfo` and `ReadState`
-- `SecureAdsSharedCa` -- connects with the CA-signed cert, performs
-  `ReadDeviceInfo` and `ReadState`
+| Example               | Gradle Task              | Description                                                                                                |
+|-----------------------|--------------------------|------------------------------------------------------------------------------------------------------------|
+| `AddRouteSelfSigned`  | `runAddRouteSelfSigned`  | Route registration (SSC) — run once per PLC. Sends `TlsConnectInfo` with `AddRemote` flag and credentials. |
+| `SecureAdsSelfSigned` | `runSecureAdsSelfSigned` | ADS client (SSC) — `ReadDeviceInfo` + `ReadState`. Requires prior route via `AddRouteSelfSigned`.          |
+| `SecureAdsSharedCa`   | `runSecureAdsSharedCa`   | ADS client (SCA) — `ReadDeviceInfo` + `ReadState`. No prior route registration needed.                     |
+| `SecureAdsPsk`        | `runSecureAdsPsk`        | ADS client (PSK) — `ReadDeviceInfo` + `ReadState`. No prior route registration needed.                     |
 
 ---
 
@@ -369,9 +448,8 @@ cd pki
 
 1. Install the CA certificate and PLC certificate on the TwinCAT target per
    [Beckhoff documentation](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/6798117643.html?id=2837414970195632676).
-2. Register a route, then communicate:
+2. Connect (no route registration needed):
    ```bash
-   ./gradlew runAddRouteSharedCa
    ./gradlew runSecureAdsSharedCa
    ```
 
@@ -382,8 +460,28 @@ cd pki
    export ADS_USERNAME=Administrator
    export ADS_PASSWORD=1
    ```
-2. Register a route, then communicate:
+2. Register a route (required for SSC, run once per PLC):
    ```bash
    ./gradlew runAddRouteSelfSigned
+   ```
+3. Communicate:
+   ```bash
    ./gradlew runSecureAdsSelfSigned
    ```
+
+### PSK Mode
+
+1. Configure a PSK entry in `StaticRoutes.xml` on the PLC (see
+   [PSK Mode](#psk-mode-pre-shared-key) above).
+2. Set PSK credentials:
+   ```bash
+   export ADS_PSK_IDENTITY=my-client
+   export ADS_PSK_PASSWORD=my-secret-password
+   ```
+3. Connect:
+   ```bash
+   ./gradlew runSecureAdsPsk
+   ```
+
+No certificates, keystores, or route registration steps are needed for PSK
+mode.

@@ -3,7 +3,7 @@ import ads.AmsPort
 import ads.Shared
 import ads.client.AdsClient
 import ads.client.AdsClientConfig
-import ads.client.SelfSignedConfig
+import ads.client.PskConfig
 import kotlinx.coroutines.runBlocking
 
 fun main() = runBlocking {
@@ -16,18 +16,16 @@ fun main() = runBlocking {
           sourceNetId = AmsNetId(Config.SOURCE_AMS_NET_ID),
           sourcePort = AmsPort(Config.SOURCE_AMS_PORT),
           secureAdsConfig =
-              SelfSignedConfig(
-                  keyStorePath = Config.SSC_KEYSTORE_PATH,
-                  keyStorePassword = Config.KEYSTORE_PASSWORD,
-                  keyStoreAlias = Config.KEYSTORE_ALIAS,
-                  keyStoreAliasPassword = Config.KEYSTORE_PASSWORD,
+              PskConfig.fromPassword(
+                  identity = Config.PSK_IDENTITY,
+                  password = Config.PSK_PASSWORD,
               ),
       )
 
   val client = AdsClient(config)
 
   try {
-    println("Connecting to ${Config.TARGET_HOST}:${Config.TARGET_PORT} (Secure ADS)...")
+    println("Connecting to ${Config.TARGET_HOST}:${Config.TARGET_PORT} (Secure ADS / PSK)...")
     client.connect().getOrThrow()
     println("Connected!")
 

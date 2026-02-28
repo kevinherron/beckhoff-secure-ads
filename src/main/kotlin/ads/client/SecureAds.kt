@@ -22,7 +22,7 @@ private val CIPHER_SUITES =
 
 internal val PROTOCOLS = arrayOf("TLSv1.2")
 
-internal fun buildSslContext(config: SecureAdsConfig): SslContext {
+internal fun buildSslContext(config: CertificateConfig): SslContext {
   val keyStore = KeyStore.getInstance("PKCS12")
   FileInputStream(config.keyStorePath.toFile()).use { fis ->
     keyStore.load(fis, config.keyStorePassword.toCharArray())
@@ -41,9 +41,8 @@ internal fun buildSslContext(config: SecureAdsConfig): SslContext {
           .keyManager(key, cert)
           .apply {
             when (config) {
-              is SecureAdsConfig.SelfSignedConfig ->
-                  trustManager(InsecureTrustManagerFactory.INSTANCE)
-              is SecureAdsConfig.SharedCaConfig -> trustManager(config.caCertPath.toFile())
+              is SelfSignedConfig -> trustManager(InsecureTrustManagerFactory.INSTANCE)
+              is SharedCaConfig -> trustManager(config.caCertPath.toFile())
             }
           }
           .ciphers(CIPHER_SUITES, SupportedCipherSuiteFilter.INSTANCE)
@@ -58,22 +57,29 @@ internal fun buildTlsConnectInfoRequest(
     sourceNetId: AmsNetId,
 ): TlsConnectInfo {
   val hostName = config.hostName ?: InetAddress.getLocalHost().hostName
-  val credentials =
-      when (config) {
-        is SecureAdsConfig.SelfSignedConfig -> config.credentials
-        is SecureAdsConfig.SharedCaConfig -> null
-      }
+
+  val credentials: Pair<String, String>?
+  val flags: Set<TlsConnectInfo.Flag>
+
+  when (config) {
+    is SelfSignedConfig -> {
+      credentials = config.credentials
+      flags = setOf(TlsConnectInfo.Flag.SELF_SIGNED)
+    }
+    is SharedCaConfig -> {
+      credentials = null
+      flags = emptySet()
+    }
+    is PskConfig -> {
+      credentials = null
+      flags = emptySet()
+    }
+  }
 
   val baseSize = TlsConnectInfo.Serde.BASE_SIZE
   val userBytes = credentials?.first?.toByteArray(TlsConnectInfo.CHARSET)
   val passwordBytes = credentials?.second?.toByteArray(TlsConnectInfo.CHARSET)
   val length = baseSize + (userBytes?.size ?: 0) + (passwordBytes?.size ?: 0)
-
-  val flags: Set<TlsConnectInfo.Flag> =
-      when (config) {
-        is SecureAdsConfig.SelfSignedConfig -> setOf(TlsConnectInfo.Flag.SELF_SIGNED)
-        is SecureAdsConfig.SharedCaConfig -> emptySet()
-      }
 
   return TlsConnectInfo(
       length = length.toUShort(),

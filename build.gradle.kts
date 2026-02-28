@@ -14,6 +14,7 @@ dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
   implementation("io.netty:netty-all:4.2.10.Final")
+  implementation("org.bouncycastle:bctls-jdk18on:1.80")
   implementation("ch.qos.logback:logback-classic:1.5.32")
 
   testImplementation(kotlin("test"))
@@ -51,9 +52,10 @@ registerRunTask(
 )
 
 registerRunTask(
-    "runAddRouteSharedCa",
-    "AddRouteSharedCaKt",
-    "Register ADS route (CA-signed cert mode)",
+    "runSecureAdsPsk",
+    "SecureAdsPskKt",
+    "Run Secure ADS client (PSK mode)",
 )
+
 
 spotless { kotlin { ktfmt() } }
