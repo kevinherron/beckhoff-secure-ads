@@ -3,7 +3,7 @@ import ads.AmsPort
 import ads.Shared
 import ads.client.AdsClient
 import ads.client.AdsClientConfig
-import ads.client.SecureAdsConfig
+import ads.client.SelfSignedConfig
 import kotlinx.coroutines.runBlocking
 
 fun main() = runBlocking {
@@ -16,7 +16,7 @@ fun main() = runBlocking {
           sourceNetId = AmsNetId(Config.SOURCE_AMS_NET_ID),
           sourcePort = AmsPort(Config.SOURCE_AMS_PORT),
           secureAdsConfig =
-              SecureAdsConfig.SelfSignedConfig(
+              SelfSignedConfig(
                   keyStorePath = Config.SSC_KEYSTORE_PATH,
                   keyStorePassword = Config.KEYSTORE_PASSWORD,
                   keyStoreAlias = Config.KEYSTORE_ALIAS,

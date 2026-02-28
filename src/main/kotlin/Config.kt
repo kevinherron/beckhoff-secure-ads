@@ -2,18 +2,26 @@ import java.nio.file.Path
 
 object Config {
   // Network - set to match your environment
-  const val TARGET_HOST = "192.0.2.10"
+  const val TARGET_HOST = "172.16.96.129"
   const val TARGET_PORT: UShort = 8016u
 
   // AMS - set to match your environment
-  const val SOURCE_AMS_NET_ID = "192.0.2.1.1.1"
+  const val SOURCE_AMS_NET_ID = "172.16.96.1.1.1"
   const val SOURCE_AMS_PORT: UShort = 32768u
-  const val TARGET_AMS_NET_ID = "192.0.2.10.1.1"
+  const val TARGET_AMS_NET_ID = "172.16.96.129.1.1"
   const val TARGET_AMS_PORT: UShort = 851u
 
   // Credentials (SSC AddRoute)
   val USERNAME: String by lazy { System.getenv("ADS_USERNAME") ?: error("ADS_USERNAME not set") }
   val PASSWORD: String by lazy { System.getenv("ADS_PASSWORD") ?: error("ADS_PASSWORD not set") }
+
+  // PSK credentials
+  val PSK_IDENTITY: String by lazy {
+    System.getenv("ADS_PSK_IDENTITY") ?: error("ADS_PSK_IDENTITY not set")
+  }
+  val PSK_PASSWORD: String by lazy {
+    System.getenv("ADS_PSK_PASSWORD") ?: error("ADS_PSK_PASSWORD not set")
+  }
 
   // Keystore
   const val KEYSTORE_ALIAS = "ads-client"
